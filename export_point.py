@@ -2,11 +2,13 @@
 ОДНА ТОЧКА СЕРИИ В ЯВНОМ ВИДЕ: сырые данные и каждый шаг обработки -> CSV + графики.
 
 Запуск (из папки, где лежит этот файл):
-    python export_point.py rect 10 100                  # форма, амплитуда A (В), ширина W (нс)
-    python export_point.py путь\\к\\A10V_W100ns_raw.npz   # или прямо файл точки
+    python export_point.py rect 10 100 --sweep <папка серии>   # форма, амплитуда A (В), ширина W (нс)
+    python export_point.py <путь к файлу A10V_W100ns_raw.npz>  # или прямо файл точки
 Ключи:
-    --sweep <папка>   где лежит серия (по умолчанию SWEEP ниже)
-    --out <папка>     куда писать (по умолчанию <папка этого файла>\\<форма>_A..V_W..ns)
+    --sweep <папка>   папка серии sweep_20261110_144320 (в ней подпапки rect, gauss, ...).
+                      Можно не указывать, если эта папка лежит рядом с этим файлом
+                      или на уровень выше.
+    --out <папка>     куда писать (по умолчанию рядом с этим файлом, папка <форма>_A..V_W..ns)
 
 Метод тот же, что в infiniium_phase_stats.py (и check_by_hand.py) основного проекта, но сохраняется
 каждый промежуточный результат, по каждому событию отдельно. Описание файлов — 00_README.txt
@@ -29,18 +31,34 @@ WIN = 0.3e-6          # окно бегущей подгонки, с
 STEP = 0.1e-6         # шаг окна, с
 REC_PHASE, REC_AMP = 2.0, 0.05   # «восстановилось»: |Δφ| < 2° и |A/A0 − 1| < 5 %
 
-SWEEP = r'C:\Матвей\Наука\Pierce_Oscillator\data\sweep_20261110_144320'   # главная серия 10.11.2026
+SWEEP_NAME = 'sweep_20261110_144320'      # главная серия 10.11.2026
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def find_sweep():
+    """Ищет папку серии рядом с программой, уровнем выше и в текущей папке."""
+    for base in (HERE, os.path.dirname(HERE), os.getcwd()):
+        for cand in (os.path.join(base, SWEEP_NAME), os.path.join(base, 'data', SWEEP_NAME)):
+            if os.path.isdir(cand):
+                return cand
+    return None
+
 
 ap = argparse.ArgumentParser(description='Одна точка серии в явном виде (CSV + графики)')
 ap.add_argument('point', nargs='+', help='форма A W  (например: rect 10 100)  или путь к *_raw.npz')
-ap.add_argument('--sweep', default=SWEEP, help='папка серии')
+ap.add_argument('--sweep', help=f'папка серии {SWEEP_NAME} (подпапки rect, gauss, ...)')
 ap.add_argument('--out', help='папка вывода')
 args = ap.parse_args()
 if len(args.point) == 1:
     src = args.point[0]
 elif len(args.point) == 3:
     s_, a_, w_ = args.point
-    src = os.path.join(args.sweep, s_, f'A{float(a_):g}V_W{float(w_):g}ns_raw.npz')
+    sweep = args.sweep or find_sweep()
+    if sweep is None:
+        sys.exit(f'Не нашёл папку серии {SWEEP_NAME}.\n'
+                 f'Укажите её явно:  python export_point.py {s_} {a_} {w_} --sweep <путь к {SWEEP_NAME}>\n'
+                 f'или положите её рядом с export_point.py.')
+    src = os.path.join(sweep, s_, f'A{float(a_):g}V_W{float(w_):g}ns_raw.npz')
 else:
     ap.error('нужно либо 3 значения (форма A W), либо один путь к *_raw.npz')
 if not os.path.isfile(src):
@@ -48,11 +66,11 @@ if not os.path.isfile(src):
     have = sorted(f[:-8] for f in os.listdir(folder) if f.endswith('_raw.npz')) if os.path.isdir(folder) else []
     sys.exit(f'Нет файла: {src}\n' + (f'В {folder} есть: ' + ', '.join(have) if have else
                                        'Проверьте форму (rect, haversine, triangle, gauss, sinecycle) и --sweep'))
-src = os.path.abspath(src)
 d = np.load(src)
+src_label = '/'.join(os.path.normpath(os.path.abspath(src)).split(os.sep)[-3:])   # серия/форма/файл, без диска
 shape, A, W = str(d['shape']), float(d['amp']), float(d['width'])
 name = f'{shape}_A{A:g}V_W{W * 1e9:.0f}ns'
-out = args.out or os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+out = args.out or os.path.join(HERE, name)
 os.makedirs(out, exist_ok=True)
 P = lambda f: os.path.join(out, f)
 
@@ -181,7 +199,7 @@ pk, dip = dphi_ev[:, jm], amp_ev[:, ja]      # по каждому событи�
 R_hit = abs(np.mean(np.exp(1j * np.radians(phase_hit))))
 shift_mean = np.degrees(np.angle(np.mean(np.exp(1j * np.radians(shift)))))
 res = [
-    ('файл', src), ('форма', shape), ('A заказ, В', A), ('W заказ, нс', W * 1e9),
+    ('файл', src_label), ('форма', shape), ('A заказ, В', A), ('W заказ, нс', W * 1e9),
     ('событий', nev), ('событий с найденным фронтом', int(np.isfinite(t_edge).sum())),
     ('уровень поиска фронта CH1, В', level),
     ('окно ДО, мкс', f'{pre[0] * 1e6:.2f} … {pre[1] * 1e6:.2f}'),
@@ -265,7 +283,7 @@ for a_, y, ttl in [(ax[0], pk, f'Δφ при {cs[jm] * 1e6:.1f} мкс, °'),
 fig.tight_layout(); fig.savefig(P('fig5_vs_hit_phase.png'), dpi=150); plt.close(fig)
 
 # ---------- README ----------
-readme = f"""Точка {name} в явном виде.  Источник: {src}
+readme = f"""Точка {name} в явном виде.  Источник: {src_label}
 Сделано scripts/export_point.py. Все CSV: разделитель — запятая, десятичная точка, первая строка — заголовки.
 MATLAB: T = readtable('02_raw_CH2_osc_V.csv');  или  M = readmatrix('02_raw_CH2_osc_V.csv');  (1-й столбец — время)
 Время 0 = момент запуска осциллографа по фронту помехи (CH1). Событие = один импульс помехи (всего {nev}).

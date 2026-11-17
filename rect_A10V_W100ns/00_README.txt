@@ -1,4 +1,4 @@
-Точка rect_A10V_W100ns в явном виде.  Источник: C:\Матвей\Наука\Pierce_Oscillator\data\sweep_20261110_144320\rect\A10V_W100ns_raw.npz
+Точка rect_A10V_W100ns в явном виде.  Источник: sweep_20261110_144320/rect/A10V_W100ns_raw.npz
 Сделано scripts/export_point.py. Все CSV: разделитель — запятая, десятичная точка, первая строка — заголовки.
 MATLAB: T = readtable('02_raw_CH2_osc_V.csv');  или  M = readmatrix('02_raw_CH2_osc_V.csv');  (1-й столбец — время)
 Время 0 = момент запуска осциллографа по фронту помехи (CH1). Событие = один импульс помехи (всего 200).

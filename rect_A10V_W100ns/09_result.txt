@@ -1,4 +1,4 @@
-файл: C:\Матвей\Наука\Pierce_Oscillator\data\sweep_20261110_144320\rect\A10V_W100ns_raw.npz
+файл: sweep_20261110_144320/rect/A10V_W100ns_raw.npz
 форма: rect
 A заказ, В: 10.0
 W заказ, нс: 100.00000000000001
