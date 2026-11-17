@@ -98,6 +98,19 @@ for k in range(nev):
     if idx.size:
         i = idx[0] + i0
         t_edge[k] = t[i] + (level - pulse[k, i]) / (pulse[k, i + 1] - pulse[k, i]) * dt
+# В слабых точках (A = 2 В) помеха в 1–2 импульсах не доходит до уровня — фронта нет.
+# Такие импульсы, как и в основной обработке серии, дальше не используются (в сырых CSV они есть).
+ok = np.isfinite(t_edge)
+ev_ok = np.flatnonzero(ok) + 1                   # номера обработанных событий (как в ev001…)
+dropped = np.flatnonzero(~ok) + 1
+n_ok = int(ok.sum())
+if n_ok < 5:
+    sys.exit(f'Фронт помехи найден только в {n_ok} событиях из {nev} — обрабатывать нечего.')
+if dropped.size:
+    print(f'  без фронта (уровень {level:g} В) и не обрабатываются: события {", ".join(map(str, dropped))}')
+O = osc[ok]                                      # генерация только обработанных событий
+t_edge = t_edge[ok]
+ok_cols = ','.join(f'ev{k:03d}' for k in ev_ok)
 
 # ---------- шаг 3. частота по участку ДО помехи ----------
 pre = (t[0] + 0.1e-6, -0.1e-6 - 2.5 * W)
@@ -123,12 +136,12 @@ np.savetxt(P('03_frequency.csv'), np.column_stack([np.arange(1, nev + 1), f_each
 
 # ---------- шаг 4. «фантом»: синусоида по участку ДО помехи ----------
 def fit(lo, hi):
-    """osc[:, lo<=t<=hi] ≈ a·sin(wt) + b·cos(wt) + c  для всех событий сразу.
+    """O[:, lo<=t<=hi] ≈ a·sin(wt) + b·cos(wt) + c  для всех событий сразу.
     a·sin+b·cos = |z|·sin(wt + arg z), z = a + i·b."""
     m = (t >= lo) & (t <= hi)
     M = np.column_stack([np.sin(w * t[m]), np.cos(w * t[m]), np.ones(m.sum())])
-    C = np.linalg.lstsq(M, osc[:, m].T, rcond=None)[0]
-    resid = np.std(osc[:, m] - (M @ C).T, axis=1)
+    C = np.linalg.lstsq(M, O[:, m].T, rcond=None)[0]
+    resid = np.std(O[:, m] - (M @ C).T, axis=1)
     return C[0], C[1], C[2], resid
 
 
@@ -138,19 +151,19 @@ A0 = np.abs(z0)
 phi0 = np.degrees(np.angle(z0))                               # фаза фантома при t = 0
 phase_hit = (phi0 + 360 * f0 * t_edge) % 360                  # фаза генерации в момент фронта помехи
 np.savetxt(P('04_phantom.csv'),
-           np.column_stack([np.arange(1, nev + 1), t_edge * 1e9, a0, b0, c0, A0, phi0 % 360, phase_hit, r0]),
+           np.column_stack([ev_ok, t_edge * 1e9, a0, b0, c0, A0, phi0 % 360, phase_hit, r0]),
            delimiter=',', fmt=['%d'] + ['%.6g'] * 8,
            header='event,t_edge_ns,a_V,b_V,c_V,A0_V,phi0_deg,phase_hit_deg,resid_V', comments='')
 
 # ---------- шаг 5. бегущее окно: фаза и амплитуда относительно фантома ----------
 cs = np.arange(-2e-6, t[-1] - WIN / 2, STEP)
-R = np.empty((nev, cs.size), complex)
+R = np.empty((n_ok, cs.size), complex)
 for j, c in enumerate(cs):
     a, b, _, _ = fit(c - WIN / 2, c + WIN / 2)
     R[:, j] = (a + 1j * b) / z0
 dphi_ev = np.degrees(np.angle(R))                             # (−180…180]
 amp_ev = np.abs(R)
-hdr = 'center_us,' + ev_cols
+hdr = 'center_us,' + ok_cols
 np.savetxt(P('05_track_dphi_deg_each.csv'), np.column_stack([cs * 1e6, dphi_ev.T]), delimiter=',',
            fmt='%.5g', header=hdr, comments='')
 np.savetxt(P('06_track_amp_rel_each.csv'), np.column_stack([cs * 1e6, amp_ev.T]), delimiter=',',
@@ -177,7 +190,7 @@ zone = (cs > -0.5e-6) & (cs < late[0])
 jm = np.flatnonzero(zone & (amp > 0.5))[np.argmax(np.abs(dphi[zone & (amp > 0.5)]))]   # пик среднего отклонения
 ja = np.flatnonzero(zone)[np.argmin(amp[zone])]                                       # провал амплитуды
 np.savetxt(P('08_per_event_result.csv'),
-           np.column_stack([np.arange(1, nev + 1), phase_hit, dphi_ev[:, jm], amp_ev[:, ja], amp_late, shift]),
+           np.column_stack([ev_ok, phase_hit, dphi_ev[:, jm], amp_ev[:, ja], amp_late, shift]),
            delimiter=',', fmt=['%d'] + ['%.6g'] * 5,
            header=f'event,phase_hit_deg,dphi_at_{cs[jm] * 1e6:.1f}us_deg,amp_at_{cs[ja] * 1e6:.1f}us_rel,'
                   f'amp_late_rel,shift_late_deg', comments='')
@@ -200,7 +213,8 @@ R_hit = abs(np.mean(np.exp(1j * np.radians(phase_hit))))
 shift_mean = np.degrees(np.angle(np.mean(np.exp(1j * np.radians(shift)))))
 res = [
     ('файл', src_label), ('форма', shape), ('A заказ, В', A), ('W заказ, нс', W * 1e9),
-    ('событий', nev), ('событий с найденным фронтом', int(np.isfinite(t_edge).sum())),
+    ('событий', nev), ('событий с найденным фронтом (обработано)', n_ok),
+    ('не обработаны (нет фронта), номера', ', '.join(map(str, dropped)) or '—'),
     ('уровень поиска фронта CH1, В', level),
     ('окно ДО, мкс', f'{pre[0] * 1e6:.2f} … {pre[1] * 1e6:.2f}'),
     ('окно ПОЗДНО, мкс', f'{late[0] * 1e6:.2f} … {late[1] * 1e6:.2f}'),
@@ -217,7 +231,7 @@ res = [
      f'{dip.min():.3f} ({phase_hit[dip.argmin()]:.0f}) … {dip.max():.3f} ({phase_hit[dip.argmax()]:.0f})'),
     ('время восстановления (|Δφ|<2° и |A−1|<5 %), мкс', f'{t_rec * 1e6:.2f}'),
     ('постоянный сдвиг фазы (среднее), °', f'{shift_mean:+.4f}'),
-    ('  ... ошибка среднего, °', f'{shift.std() / np.sqrt(nev):.4f}'),
+    ('  ... ошибка среднего, °', f'{shift.std() / np.sqrt(n_ok):.4f}'),
     ('  ... разброс между событиями, °', f'{shift.std():.4f}'),
     ('  ... зависимость от фазы попадания (PRC): ±°, макс. при °', f'{prc_a:.3f}, {prc_p:.0f}'),
     ('амплитуда поздно / до (медиана)', f'{np.median(amp_late):.4f}'),
@@ -238,10 +252,10 @@ ax[0].set_ylabel('CH1 помеха, В'); ax[1].set_ylabel('CH2 генераци
 ax[1].set_xlim(-1, 3); ax[0].set_title(f'{name}: событие 1 из {nev} (столбец ev001), сырые данные')
 fig.tight_layout(); fig.savefig(P('fig1_raw.png'), dpi=150); plt.close(fig)
 # 2. одно событие + фантом
-k = 0
+k = 0                                            # первое обработанное событие
 fig, ax = plt.subplots(figsize=(10, 3.8))
 z = (t > -0.6e-6) & (t < 2.5e-6)
-ax.plot(T[z], osc[k, z], lw=.8, label='CH2, событие 1')
+ax.plot(T[z], osc[k, z], lw=.8, label=f'CH2, событие {ev_ok[0]}')
 ax.plot(T[z], a0[k] * np.sin(w * t[z]) + b0[k] * np.cos(w * t[z]) + c0[k], 'k--', lw=.8,
         label='фантом (подгонка по участку до помехи)')
 ax.axvline(pre[1] * 1e6, color='g', ls=':', label='конец окна ДО')
@@ -257,13 +271,13 @@ ax[1].set_ylabel('Δφ к фантому, °'); ax[1].legend(fontsize=7)
 ax[2].plot(cs * 1e6, amp_ev.T, color='0.6', lw=.3); ax[2].plot(cs * 1e6, amp, 'b', lw=1.5)
 ax[2].set_ylabel('A / A0'); ax[2].set_xlabel('центр окна, мкс от запуска')
 ax[2].axvline(t_rec * 1e6, color='g', ls=':'); ax[1].axvline(t_rec * 1e6, color='g', ls=':')
-ax[0].set_title(f'{name}: серые — каждое из {nev} событий, жирная — среднее; зелёная — восстановление')
+ax[0].set_title(f'{name}: серые — каждое из {n_ok} событий, жирная — среднее; зелёная — восстановление')
 ax[2].set_xlim(-2, 8)
 fig.tight_layout(); fig.savefig(P('fig3_tracks.png'), dpi=150); plt.close(fig)
 # 4. карта: события, отсортированные по фазе попадания
 o = np.argsort(phase_hit)
 fig, ax = plt.subplots(1, 2, figsize=(11, 4.5), sharey=True)
-ext = [cs[0] * 1e6, cs[-1] * 1e6, 0, nev]
+ext = [cs[0] * 1e6, cs[-1] * 1e6, 0, n_ok]
 im = ax[0].imshow(np.where(good, dphi_ev, np.nan)[o], aspect='auto', origin='lower', extent=ext,
                   cmap='RdBu_r', vmin=-60, vmax=60)
 fig.colorbar(im, ax=ax[0], label='Δφ, °')
@@ -298,6 +312,8 @@ CH1 при A ≥ 7 В обрезан сверху на ~6,4 В (край экр�
 
 ШАГ 2. Фронт помехи: первое пересечение CH1 уровня {level:g} В снизу вверх около t = 0,
         с линейной интерполяцией между отсчётами  ->  столбец t_edge_ns в 04_phantom.csv.
+        Импульсы, где помеха не дошла до уровня (бывает в 1–2 импульсах при A = 2 В), дальше не обрабатываются,
+        как и в основной обработке серии: в файлах 04–08 их нет. Сейчас: {', '.join(map(str, dropped)) or 'все обработаны'}.
 
 ШАГ 3. Частота генерации
   03_frequency.csv         event, f_Hz — частота каждого события: БПФ участка ДО помехи
